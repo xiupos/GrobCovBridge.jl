@@ -1,2 +1,3 @@
 [deps]
-Test = "8dfed614-e22c-358a-02ac-f38f1fcba0c1"
+Oscar = "f1435218-dba5-11e9-1e4d-f1a5fab5fc13"
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"

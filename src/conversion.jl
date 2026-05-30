@@ -16,6 +16,7 @@ Returns `(SF, SR, sing_f)`:
 - `sing_f`: `f` as an element of `SR`
 """
 function oscar_to_singular_parametric(f, R, params, main_vars)
+    _check_var_partition(R, params, main_vars)
     param_names = string.(symbols(R)[_var_indices(R, params)])
     main_names  = string.(symbols(R)[_var_indices(R, main_vars)])
 
@@ -41,6 +42,7 @@ function oscar_ideal_to_singular_parametric(I, params, main_vars)
     gs = gens(I)
     isempty(gs) && error("Ideal must have at least one generator.")
 
+    _check_var_partition(R, params, main_vars)
     param_names = string.(symbols(R)[_var_indices(R, params)])
     main_names  = string.(symbols(R)[_var_indices(R, main_vars)])
 
@@ -91,6 +93,29 @@ function _var_indices(R, vars)
     return [findfirst(==(v), all_gens) for v in vars]
 end
 
+# Validate that `params` and `main_vars` form a partition of the generators of `R`.
+# Without this, any generator that is neither a parameter nor a main variable would
+# be silently ignored during conversion, corrupting the polynomial.
+function _check_var_partition(R, params, main_vars)
+    all_gens = gens(R)
+    declared = vcat(collect(params), collect(main_vars))
+
+    for v in declared
+        findfirst(==(v), all_gens) === nothing &&
+            throw(ArgumentError("Variable $v is not a generator of the base ring."))
+    end
+    for p in params, m in main_vars
+        p == m && throw(ArgumentError("Variable $p appears in both params and main_vars."))
+    end
+    for g in all_gens
+        findfirst(==(g), declared) === nothing &&
+            throw(ArgumentError(
+                "Variable $g is neither a parameter nor a main variable; params and " *
+                "main_vars must together cover all variables of the base ring."))
+    end
+    return nothing
+end
+
 # ---------------------------------------------------------------------------
 # Singular → Oscar
 # ---------------------------------------------------------------------------
@@ -101,14 +126,12 @@ end
 Convert a Singular polynomial `f_sing` (element of `SR`, a PolyRing over an
 `N_FField SF`) back to an Oscar polynomial in `R_oscar`.
 
-Coefficients of `f_sing` are rational functions in the parameters; only the
-numerator is used (the denominator is divided out if possible, otherwise the
-polynomial represents the numerator only, assuming the caller has ensured the
-result is actually a polynomial).
+Coefficients of `f_sing` must be polynomials in the parameters (i.e. rational
+functions with a constant denominator). A non-constant denominator — a genuine
+parametric rational function — cannot be represented in `R_oscar` and raises an
+error rather than silently dropping the denominator.
 """
 function singular_to_oscar_poly(f_sing, SF, SR, R_oscar, params, main_vars)
-    # Build a Singular poly ring purely over QQ for the parameter part
-    param_names = string.(S.symbols(SR) |> _ -> S.symbols(SF))  # wrong; build properly
     SF_param_names = [string(S.symbols(SF)[i]) for i in 1:S.transcendence_degree(SF)]
     SR_param, sp_vars = S.polynomial_ring(S.QQ, SF_param_names)
 
@@ -119,19 +142,14 @@ function singular_to_oscar_poly(f_sing, SF, SR, R_oscar, params, main_vars)
         # Get exponent vector for main variables
         main_expvec = [S.degree(m, i) for i in 1:S.nvars(SR)]
 
-        # Convert numerator of c to a polynomial in SR_param
+        # Convert numerator and denominator of c to polynomials in SR_param
         c_num = S.n_transExt_to_spoly(S.numerator(c); parent_ring = SR_param)
         c_den = S.n_transExt_to_spoly(S.denominator(c); parent_ring = SR_param)
 
-        # We expect c_den to be a scalar (constant) when f_sing is a genuine polynomial
-        # If denominator is non-constant the rational function has not been cleared.
-        # In grobcov output, basis polynomials are rational-coefficient polynomials in
-        # x-variables; we preserve the rational coefficient as-is in Oscar by
-        # representing the coefficient as a QQ scalar (only when the denominator is
-        # a rational number, not a parameter polynomial).
         if !S.is_constant(c_den)
-            # Rational-function coefficient: return numerator poly (common in basis output)
-            # Fall through: work with numerator only, scaling is caller's responsibility.
+            error("singular_to_oscar_poly: coefficient has a non-constant denominator " *
+                  "(parametric rational function). Only polynomial coefficients in the " *
+                  "parameters are supported. Coefficient: $c")
         end
         den_coeff = _sing_constant_to_QQ(c_den, SR_param)
 
